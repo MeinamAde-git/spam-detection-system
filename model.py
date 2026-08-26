@@ -26,14 +26,18 @@ def train_and_benchmark_models():
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
-    print("2. Vectorizing text...")
+    print("2. Vectorizing text with TF-IDF...")
     vectorizer = TfidfVectorizer(ngram_range=(1, 2), max_features=5000, stop_words="english")
     X_train_vec = vectorizer.fit_transform(X_train)
     X_test_vec = vectorizer.transform(X_test)
 
     models = {
-        "Neural Network (MLP)": MLPClassifier(hidden_layer_sizes=(64, 32), activation="relu", max_iter=50,
-                                              random_state=42),
+        "Neural Network (MLP)": MLPClassifier(
+            hidden_layer_sizes=(64, 32),
+            activation="relu",
+            max_iter=50,
+            random_state=42
+        ),
         "Multinomial Naive Bayes": MultinomialNB(),
         "Logistic Regression": LogisticRegression(max_iter=200, random_state=42)
     }
@@ -72,9 +76,12 @@ def train_and_benchmark_models():
         "benchmarks": benchmark_df
     }
 
+    # Save to both locations for guaranteed path resolution
     output_path = os.path.join("outputs", "multiclass_spam_model.pkl")
     joblib.dump(payload, output_path)
-    print(f"\nSaved all 3 models to '{output_path}'!")
+    joblib.dump(payload, "multiclass_spam_model.pkl")
+
+    print(f"\nSaved all 3 models to '{output_path}' and 'multiclass_spam_model.pkl'!")
     print("\nBenchmark Summary:\n", benchmark_df.to_string(index=False))
 
 
