@@ -1,105 +1,61 @@
-import numpy as np
+import os
+import joblib
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.preprocessing import LabelEncoder
 from sklearn.neural_network import MLPClassifier
-from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score,
-    f1_score, confusion_matrix, classification_report
-)
+from sklearn.metrics import classification_report
+from dataset import create_multiclass_dataset
 
 
-def build_model():
-    model = MLPClassifier(
-        hidden_layer_sizes=(256, 128, 64),  # 3 hidden layers
-        activation='relu',                  # ReLU activation
-        solver='adam',                      # Adam optimizer
-        alpha=0.001,                        # L2 regularization
-        batch_size=32,
-        learning_rate='adaptive',
-        learning_rate_init=0.001,
-        max_iter=200,
-        early_stopping=True,
-        validation_fraction=0.1,
-        n_iter_no_change=15,
-        random_state=42,
-        verbose=False
+def train_and_save_multiclass_model():
+    os.makedirs("outputs", exist_ok=True)
+
+    print("1. Generating multi-class dataset...")
+    df = create_multiclass_dataset(n_samples=3000)
+
+    X = df["text"]
+    y_raw = df["category"]
+
+    # Encode string labels to integers
+    encoder = LabelEncoder()
+    y = encoder.fit_transform(y_raw)
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
     )
 
-    print("✅ Model built: MLP Deep Neural Network")
-    print("   Architecture : Input → 256 → 128 → 64 → Output")
-    print("   Activation   : ReLU (hidden) + Logistic (output)")
-    print("   Optimizer    : Adam")
-    print("   Regularizer  : L2 (alpha=0.001)")
+    print("2. Vectorizing text with TF-IDF...")
+    vectorizer = TfidfVectorizer(ngram_range=(1, 2), max_features=5000, stop_words="english")
+    X_train_vec = vectorizer.fit_transform(X_train)
+    X_test_vec = vectorizer.transform(X_test)
 
-    return model
+    print("3. Training Multi-Layer Perceptron (MLP)...")
+    mlp = MLPClassifier(
+        hidden_layer_sizes=(64, 32),
+        activation="relu",
+        solver="adam",
+        max_iter=50,
+        random_state=42
+    )
+    mlp.fit(X_train_vec, y_train)
 
+    print("4. Evaluating Model...")
+    y_pred = mlp.predict(X_test_vec)
+    print("\nClassification Report:\n", classification_report(y_test, y_pred, target_names=encoder.classes_))
 
-def train_model(model, X_train, y_train):
-    print("\n⏳ Training the neural network...")
-    model.fit(X_train, y_train)
-    print(f"✅ Training complete!")
-    print(f"   Epochs run  : {model.n_iter_}")
-    print(f"   Final loss  : {model.loss_:.4f}")
-    return model
-
-
-def evaluate_model(model, X_test, y_test):
-    y_pred = model.predict(X_test)
-
-    acc  = accuracy_score(y_test, y_pred)
-    prec = precision_score(y_test, y_pred, zero_division=0)
-    rec  = recall_score(y_test, y_pred, zero_division=0)
-    f1   = f1_score(y_test, y_pred, zero_division=0)
-    cm   = confusion_matrix(y_test, y_pred)
-
-    print("\n" + "="*50)
-    print("  MODEL EVALUATION RESULTS")
-    print("="*50)
-    print(f"  Accuracy  : {acc*100:.2f}%")
-    print(f"  Precision : {prec*100:.2f}%")
-    print(f"  Recall    : {rec*100:.2f}%")
-    print(f"  F1 Score  : {f1*100:.2f}%")
-    print("="*50)
-    print("\nConfusion Matrix:")
-    print(f"  True Negatives  (Ham→Ham)   : {cm[0][0]}")
-    print(f"  False Positives (Ham→Spam)  : {cm[0][1]}")
-    print(f"  False Negatives (Spam→Ham)  : {cm[1][0]}")
-    print(f"  True Positives  (Spam→Spam) : {cm[1][1]}")
-    print("\nDetailed Classification Report:")
-    print(classification_report(y_test, y_pred, target_names=['Ham', 'Spam']))
-
-    return {
-        'accuracy': acc, 'precision': prec,
-        'recall': rec, 'f1': f1,
-        'confusion_matrix': cm, 'y_pred': y_pred
+    model_payload = {
+        "model": mlp,
+        "vectorizer": vectorizer,
+        "encoder": encoder,
+        "classes": encoder.classes_.tolist()
     }
 
-
-def predict_email(model, vectorizer, email_text):
-    import re, string
-
-    text = email_text.lower()
-    text = re.sub(r'http\S+|www\S+', ' ', text)
-    text = re.sub(r'\d+', ' ', text)
-    text = text.translate(str.maketrans('', '', string.punctuation))
-    text = re.sub(r'\s+', ' ', text).strip()
-
-    features = vectorizer.transform([text]).toarray()
-    pred = model.predict(features)[0]
-    proba = model.predict_proba(features)[0]
-    confidence = proba[pred]
-
-    label = "🚨 SPAM" if pred == 1 else "✅ HAM"
-    return label, confidence
+    output_path = os.path.join("outputs", "multiclass_spam_model.pkl")
+    joblib.dump(model_payload, output_path)
+    print(f"\nModel pipeline saved successfully to '{output_path}'!")
 
 
 if __name__ == "__main__":
-    from dataset import create_dataset
-    from preprocessing import preprocess_dataframe, extract_features, split_data
-
-    df = create_dataset()
-    df = preprocess_dataframe(df)
-    X, y, vectorizer = extract_features(df)
-    X_train, X_test, y_train, y_test = split_data(X, y)
-
-    model = build_model()
-    model = train_model(model, X_train, y_train)
-    metrics = evaluate_model(model, X_test, y_test)
+    train_and_save_multiclass_model()
