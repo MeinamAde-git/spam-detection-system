@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from urllib.parse import urlparse
 import joblib
 import pandas as pd
@@ -11,7 +12,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom Theme and UI Elements
+# Custom Theme and Styling
 st.markdown("""
     <style>
     .metric-card {
@@ -43,25 +44,35 @@ st.markdown("""
 
 @st.cache_resource
 def load_pipeline():
-    model_path = os.path.join("outputs", "multiclass_spam_model.pkl")
-    if not os.path.exists(model_path):
-        return None
-    return joblib.load(model_path)
+    # Supports loading from root directory or outputs/ folder
+    candidate_paths = [
+        "multiclass_spam_model.pkl",
+        os.path.join("outputs", "multiclass_spam_model.pkl"),
+        "spam_model.pkl",
+        os.path.join("outputs", "spam_model.pkl")
+    ]
+    for path in candidate_paths:
+        if os.path.exists(path):
+            return joblib.load(path)
+    return None
 
 
 pipeline = load_pipeline()
 
 st.title("🛡️ ThreatIntel: Multi-Class Email Security Platform")
 st.caption(
-    "Enterprise email defense platform integrating Scikit-Learn MLP classification, URL audits, and batch telemetry scanning.")
+    "Enterprise email defense platform integrating multi-model benchmarking (MLP, Naive Bayes, Logistic Regression), URL heuristics, and batch telemetry scanning.")
 
 if pipeline is None:
-    st.error("Model pipeline not found. Please ensure `outputs/multiclass_spam_model.pkl` exists.")
+    st.error("Model bundle not found. Please ensure `multiclass_spam_model.pkl` is uploaded.")
     st.stop()
 
-model = pipeline["model"]
+# Extract models
+models_dict = pipeline.get("models", {"Neural Network (MLP)": pipeline.get("model")})
 vectorizer = pipeline["vectorizer"]
-encoder = pipeline["encoder"]
+encoder = pipeline.get("encoder", None)
+classes = pipeline.get("classes", ["Primary", "Spam", "Phishing", "Promotions"])
+benchmarks_df = pipeline.get("benchmarks", None)
 
 
 # ----------------- SECURITY ENGINES ----------------- #
@@ -140,22 +151,31 @@ def highlight_top_keywords(text, vectorizer, top_n=6):
     return highlighted_text, list(highlight_set)
 
 
-# ----------------- APP MODES ----------------- #
+# ----------------- TABS ----------------- #
 
-tab1, tab2 = st.tabs(["🔍 Single Email Inspector", "📁 Bulk CSV Threat Scanner"])
+tab1, tab2, tab3 = st.tabs([
+    "🔍 Single Email Inspector",
+    "📁 Bulk CSV Threat Scanner",
+    "⚡ Multi-Model Benchmark Suite"
+])
 
 # ================= TAB 1: SINGLE EMAIL INSPECTOR =================
 with tab1:
-    presets = {
-        "Select a preset sample...": "",
-        "🚨 Phishing with Suspicious URL & Urgency": "SECURITY ALERT: Unauthorized login attempt detected from 192.168.1.1. Your bank access is suspended immediately. Verify password here: http://bit.ly/secure-bank-login-auth",
-        "⚠️ Spam: Cash Lottery Scam": "CONGRATULATIONS! You won $1,000,000 in our international cash draw! Claim your payout now at http://185.220.101.5/payout!",
-        "🏷️ Promotions: Flash Discount": "Flash Deal: Get 50% off all developer cloud certifications this week only with code SAVE50. Visit https://store.example.com/deals to redeem.",
-        "✅ Primary: Code Architecture Review": "Hi team, please review the PR submitted for the caching layer optimization. Let me know if further adjustments are required before merge."
-    }
+    top_col1, top_col2 = st.columns([2, 1])
+    with top_col1:
+        presets = {
+            "Select a preset sample...": "",
+            "🚨 Phishing with Suspicious URL & Urgency": "SECURITY ALERT: Unauthorized login attempt detected from 192.168.1.1. Your bank access is suspended immediately. Verify password here: http://bit.ly/secure-bank-login-auth",
+            "⚠️ Spam: Cash Lottery Scam": "CONGRATULATIONS! You won $1,000,000 in our international cash draw! Claim your payout now at http://185.220.101.5/payout!",
+            "🏷️ Promotions: Flash Discount": "Flash Deal: Get 50% off all developer cloud certifications this week only with code SAVE50. Visit https://store.example.com/deals to redeem.",
+            "✅ Primary: Code Architecture Review": "Hi team, please review the PR submitted for the caching layer optimization. Let me know if further adjustments are required before merge."
+        }
+        selected_preset = st.selectbox("⚡ Load Security Preset Test:", list(presets.keys()))
+        default_text = presets[selected_preset] if selected_preset != "Select a preset sample..." else ""
+    with top_col2:
+        selected_model_name = st.selectbox("🤖 Active Inference Model:", list(models_dict.keys()))
 
-    selected_preset = st.selectbox("⚡ Load Security Preset Test:", list(presets.keys()))
-    default_text = presets[selected_preset] if selected_preset != "Select a preset sample..." else ""
+    active_model = models_dict[selected_model_name]
 
     email_input = st.text_area(
         "Email Content Inspector:",
@@ -169,11 +189,14 @@ with tab1:
         run_btn = st.button("🔍 Run Full Security Audit", use_container_width=True, type="primary")
 
     if run_btn and email_input.strip():
+        t0 = time.time()
         vec_input = vectorizer.transform([email_input])
-        pred_idx = model.predict(vec_input)[0]
-        pred_label = encoder.inverse_transform([pred_idx])[0]
-        probs = model.predict_proba(vec_input)[0]
-        prob_dict = dict(zip(encoder.classes_, probs))
+        pred_idx = active_model.predict(vec_input)[0]
+        pred_label = encoder.inverse_transform([pred_idx])[0] if encoder else str(pred_idx)
+        probs = active_model.predict_proba(vec_input)[0]
+        latency_ms = (time.time() - t0) * 1000
+
+        prob_dict = dict(zip(classes, probs))
 
         url_audit = analyze_urls(email_input)
         heuristics = analyze_heuristics(email_input)
@@ -185,15 +208,17 @@ with tab1:
 
         st.markdown("---")
 
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         with c1:
             st.metric("Classification", pred_label)
         with c2:
-            st.metric("ML Model Confidence", f"{max(probs) * 100:.1f}%")
+            st.metric("Confidence", f"{max(probs) * 100:.1f}%")
         with c3:
             st.metric("Threat Index", f"{total_threat_score}/100")
         with c4:
-            st.metric("Detected URLs", f"{len(url_audit)}")
+            st.metric("Inference Latency", f"{latency_ms:.2f} ms")
+        with c5:
+            st.metric("URLs Found", f"{len(url_audit)}")
 
         st.progress(total_threat_score / 100)
 
@@ -227,7 +252,7 @@ with tab1:
         with col_right:
             st.subheader("📊 Category Probabilities")
             prob_df = pd.DataFrame({
-                "Category": encoder.classes_,
+                "Category": classes,
                 "Confidence": probs
             }).sort_values(by="Confidence", ascending=False)
             st.bar_chart(prob_df.set_index("Category"), color="#4e8cff")
@@ -239,15 +264,12 @@ with tab1:
                 st.markdown(f"**Urgency Cues:** `{'`, `'.join(heuristics['detected_urgency'])}`")
             if heuristics["detected_lures"]:
                 st.markdown(f"**Lure Cues:** `{'`, `'.join(heuristics['detected_lures'])}`")
-            if not heuristics["detected_urgency"] and not heuristics["detected_lures"]:
-                st.caption("No psychological urgency or lure triggers found.")
 
 # ================= TAB 2: BULK CSV PROCESSOR =================
 with tab2:
     st.subheader("📁 Bulk Dataset Auditor")
-    st.caption("Upload a CSV file containing an email text column to scan thousands of records in batch.")
+    st.caption("Upload a CSV file to evaluate and tag incoming email streams.")
 
-    # Downloadable Sample Template
     sample_df = pd.DataFrame({
         "email_text": [
             "Hi team, please review the pull request for the caching layer by EOD.",
@@ -270,65 +292,60 @@ with tab2:
     if uploaded_file is not None:
         batch_df = pd.read_csv(uploaded_file)
         st.write(f"**Loaded {len(batch_df)} records.**")
-
-        # Select target text column
         text_column = st.selectbox("Select the column containing email text:", batch_df.columns)
 
         if st.button("⚡ Run Batch Analysis", type="primary"):
-            with st.spinner("Processing batch classifications and threat scores..."):
+            with st.spinner("Executing batch classification..."):
                 raw_texts = batch_df[text_column].fillna("").astype(str).tolist()
-
-                # Model inference
                 batch_vecs = vectorizer.transform(raw_texts)
-                pred_indices = model.predict(batch_vecs)
-                predictions = encoder.inverse_transform(pred_indices)
-                probabilities = model.predict_proba(batch_vecs)
+
+                pred_indices = active_model.predict(batch_vecs)
+                predictions = encoder.inverse_transform(pred_indices) if encoder else [str(i) for i in pred_indices]
+                probabilities = active_model.predict_proba(batch_vecs)
                 max_confidences = [round(float(max(p)) * 100, 2) for p in probabilities]
 
-                # Heuristic evaluations
                 url_counts = [len(analyze_urls(t)) for t in raw_texts]
                 urgency_counts = [len(analyze_heuristics(t)["detected_urgency"]) for t in raw_texts]
 
-                # Threat indices
                 threat_scores = []
                 for i, p_arr in enumerate(probabilities):
-                    p_dict = dict(zip(encoder.classes_, p_arr))
+                    p_dict = dict(zip(classes, p_arr))
                     base = int((p_dict.get("Phishing", 0) + p_dict.get("Spam", 0)) * 75)
                     penalty = (url_counts[i] * 10) + (urgency_counts[i] * 5)
                     threat_scores.append(min(100, base + penalty))
 
-                # Populate results
                 batch_df["Predicted_Category"] = predictions
                 batch_df["Confidence_%"] = max_confidences
                 batch_df["Threat_Index"] = threat_scores
                 batch_df["Detected_URLs"] = url_counts
-                batch_df["Urgency_Triggers"] = urgency_counts
 
                 st.success("Batch audit complete!")
-
-                # Batch Analytics
-                bc1, bc2, bc3 = st.columns(3)
-                with bc1:
-                    st.metric("Total Emails Processed", len(batch_df))
-                with bc2:
-                    flagged_count = int((batch_df["Predicted_Category"].isin(["Spam", "Phishing"])).sum())
-                    st.metric("High-Risk Threats Detected", flagged_count)
-                with bc3:
-                    avg_threat = round(float(batch_df["Threat_Index"].mean()), 1)
-                    st.metric("Average Threat Score", f"{avg_threat}/100")
-
-                st.subheader("Category Breakdown")
-                st.bar_chart(batch_df["Predicted_Category"].value_counts())
-
-                st.subheader("Processed Data Preview")
                 st.dataframe(batch_df, use_container_width=True)
 
-                # Export Button
                 csv_export = batch_df.to_csv(index=False).encode("utf-8")
                 st.download_button(
                     "📥 Export Enriched Audit Results (CSV)",
                     csv_export,
-                    "threatintel_audit_results.csv",
+                    "threatintel_batch_results.csv",
                     "text/csv",
                     type="primary"
                 )
+
+# ================= TAB 3: MODEL BENCHMARKING SUITE =================
+with tab3:
+    st.subheader("⚡ Multi-Architecture Benchmark Dashboard")
+    st.caption(
+        "Quantitative performance, latency, and throughput comparison across evaluated machine learning algorithms.")
+
+    if benchmarks_df is not None:
+        st.dataframe(benchmarks_df, use_container_width=True)
+
+        c_chart1, c_chart2 = st.columns(2)
+        with c_chart1:
+            st.subheader("Accuracy & F1-Score Comparison")
+            st.bar_chart(benchmarks_df.set_index("Model")[["Accuracy (%)", "F1-Score (%)"]])
+        with c_chart2:
+            st.subheader("Inference Latency (ms/sample)")
+            st.bar_chart(benchmarks_df.set_index("Model")[["Inference Latency (ms/sample)"]], color="#ff7b00")
+    else:
+        st.info("Run `python3 model.py` locally and upload the model file to display the benchmark dashboard.")
