@@ -12,7 +12,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom Theme and Styling
+# Custom Styling
 st.markdown("""
     <style>
     .metric-card {
@@ -43,36 +43,85 @@ st.markdown("""
 
 
 @st.cache_resource
-def load_pipeline():
-    # Supports loading from root directory or outputs/ folder
-    candidate_paths = [
-        "multiclass_spam_model.pkl",
-        os.path.join("outputs", "multiclass_spam_model.pkl"),
-        "spam_model.pkl",
-        os.path.join("outputs", "spam_model.pkl")
-    ]
-    for path in candidate_paths:
+def load_or_train_pipeline():
+    # Attempt to load existing multi-model payload
+    for path in ["multiclass_spam_model.pkl", os.path.join("outputs", "multiclass_spam_model.pkl")]:
         if os.path.exists(path):
-            return joblib.load(path)
-    return None
+            try:
+                data = joblib.load(path)
+                if isinstance(data, dict) and "models" in data and len(data["models"]) > 1:
+                    return data
+            except Exception:
+                pass
+
+    # If old single-model file exists, retrain all 3 models dynamically
+    from sklearn.model_selection import train_test_split
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.preprocessing import LabelEncoder
+    from sklearn.neural_network import MLPClassifier
+    from sklearn.naive_bayes import MultinomialNB
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import accuracy_score, f1_score
+    from dataset import create_multiclass_dataset
+
+    df = create_multiclass_dataset(n_samples=2500)
+    encoder = LabelEncoder()
+    y = encoder.fit_transform(df["category"])
+    X = df["text"]
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+    vectorizer = TfidfVectorizer(ngram_range=(1, 2), max_features=5000, stop_words="english")
+    X_train_vec = vectorizer.fit_transform(X_train)
+    X_test_vec = vectorizer.transform(X_test)
+
+    models = {
+        "Neural Network (MLP)": MLPClassifier(hidden_layer_sizes=(64, 32), activation="relu", max_iter=40,
+                                              random_state=42),
+        "Multinomial Naive Bayes": MultinomialNB(),
+        "Logistic Regression": LogisticRegression(max_iter=150, random_state=42)
+    }
+
+    benchmark_metrics = []
+    for name, clf in models.items():
+        t0 = time.time()
+        clf.fit(X_train_vec, y_train)
+        train_time = (time.time() - t0) * 1000
+
+        t0_inf = time.time()
+        y_pred = clf.predict(X_test_vec)
+        inf_time = (time.time() - t0_inf) * 1000 / len(y_test)
+
+        acc = accuracy_score(y_test, y_pred) * 100
+        f1 = f1_score(y_test, y_pred, average="weighted") * 100
+
+        benchmark_metrics.append({
+            "Model": name,
+            "Accuracy (%)": round(acc, 2),
+            "F1-Score (%)": round(f1, 2),
+            "Train Time (ms)": round(train_time, 2),
+            "Inference Latency (ms/sample)": round(inf_time, 4)
+        })
+
+    payload = {
+        "models": models,
+        "vectorizer": vectorizer,
+        "encoder": encoder,
+        "classes": encoder.classes_.tolist(),
+        "benchmarks": pd.DataFrame(benchmark_metrics)
+    }
+    os.makedirs("outputs", exist_ok=True)
+    joblib.dump(payload, "multiclass_spam_model.pkl")
+    return payload
 
 
-pipeline = load_pipeline()
+pipeline = load_or_train_pipeline()
 
-st.title("🛡️ ThreatIntel: Multi-Class Email Security Platform")
-st.caption(
-    "Enterprise email defense platform integrating multi-model benchmarking (MLP, Naive Bayes, Logistic Regression), URL heuristics, and batch telemetry scanning.")
-
-if pipeline is None:
-    st.error("Model bundle not found. Please ensure `multiclass_spam_model.pkl` is uploaded.")
-    st.stop()
-
-# Extract models
-models_dict = pipeline.get("models", {"Neural Network (MLP)": pipeline.get("model")})
+models_dict = pipeline["models"]
 vectorizer = pipeline["vectorizer"]
-encoder = pipeline.get("encoder", None)
-classes = pipeline.get("classes", ["Primary", "Spam", "Phishing", "Promotions"])
-benchmarks_df = pipeline.get("benchmarks", None)
+encoder = pipeline["encoder"]
+classes = pipeline["classes"]
+benchmarks_df = pipeline["benchmarks"]
 
 
 # ----------------- SECURITY ENGINES ----------------- #
@@ -192,12 +241,11 @@ with tab1:
         t0 = time.time()
         vec_input = vectorizer.transform([email_input])
         pred_idx = active_model.predict(vec_input)[0]
-        pred_label = encoder.inverse_transform([pred_idx])[0] if encoder else str(pred_idx)
+        pred_label = encoder.inverse_transform([pred_idx])[0]
         probs = active_model.predict_proba(vec_input)[0]
         latency_ms = (time.time() - t0) * 1000
 
         prob_dict = dict(zip(classes, probs))
-
         url_audit = analyze_urls(email_input)
         heuristics = analyze_heuristics(email_input)
 
@@ -300,7 +348,7 @@ with tab2:
                 batch_vecs = vectorizer.transform(raw_texts)
 
                 pred_indices = active_model.predict(batch_vecs)
-                predictions = encoder.inverse_transform(pred_indices) if encoder else [str(i) for i in pred_indices]
+                predictions = encoder.inverse_transform(pred_indices)
                 probabilities = active_model.predict_proba(batch_vecs)
                 max_confidences = [round(float(max(p)) * 100, 2) for p in probabilities]
 
@@ -337,15 +385,12 @@ with tab3:
     st.caption(
         "Quantitative performance, latency, and throughput comparison across evaluated machine learning algorithms.")
 
-    if benchmarks_df is not None:
-        st.dataframe(benchmarks_df, use_container_width=True)
+    st.dataframe(benchmarks_df, use_container_width=True)
 
-        c_chart1, c_chart2 = st.columns(2)
-        with c_chart1:
-            st.subheader("Accuracy & F1-Score Comparison")
-            st.bar_chart(benchmarks_df.set_index("Model")[["Accuracy (%)", "F1-Score (%)"]])
-        with c_chart2:
-            st.subheader("Inference Latency (ms/sample)")
-            st.bar_chart(benchmarks_df.set_index("Model")[["Inference Latency (ms/sample)"]], color="#ff7b00")
-    else:
-        st.info("Run `python3 model.py` locally and upload the model file to display the benchmark dashboard.")
+    c_chart1, c_chart2 = st.columns(2)
+    with c_chart1:
+        st.subheader("Accuracy & F1-Score Comparison")
+        st.bar_chart(benchmarks_df.set_index("Model")[["Accuracy (%)", "F1-Score (%)"]])
+    with c_chart2:
+        st.subheader("Inference Latency (ms/sample)")
+        st.bar_chart(benchmarks_df.set_index("Model")[["Inference Latency (ms/sample)"]], color="#ff7b00")
